@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+ultralytics
+opencv-python
+numpy
+pandas
+openpyxl
+deep-sort-realtime
+scipy
