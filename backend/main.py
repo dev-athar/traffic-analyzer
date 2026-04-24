@@ -1,3 +1,25 @@
+"""
+main.py — FastAPI application for the Smart Drone Traffic Analyzer.
+
+Routes
+------
+POST /upload          — Accept an MP4, queue a background processing job,
+                        return a job_id.
+GET  /status/{job_id} — Poll job status and progress percentage.
+GET  /result/{job_id} — Retrieve full results once the job is complete.
+GET  /video/{job_id}  — Stream the annotated output video file.
+GET  /report/{job_id} — Download the CSV or Excel counting report.
+WS   /ws/{job_id}     — WebSocket that streams status/progress until done.
+
+State
+-----
+All job state lives in the module-level `jobs` dict (in-memory).  Contents
+are lost on server restart — acceptable for single-session local deployment.
+For multi-user or persistent use a database-backed store would be needed.
+
+Static files (processed videos, reports) are served from ./outputs via the
+/static mount so the frontend can load them directly by URL.
+"""
 import logging
 import uuid
 import time
@@ -38,11 +60,14 @@ app = FastAPI(title="Smart Drone Traffic Analyzer")
 
 app.add_middleware(
     CORSMiddleware,
+    # Vite's default dev-server port.  Add production origins here if deploying.
     allow_origins=["http://localhost:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Serve processed videos and reports directly from disk.  The frontend
+# constructs URLs like /static/<job_id>_processed.mp4 to display results.
 app.mount("/static", StaticFiles(directory="outputs"), name="static")
 
 
@@ -54,10 +79,23 @@ async def add_static_headers(request, call_next):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
+# In-memory job store: maps job_id → dict containing status, progress,
+# file paths, and the full summary once processing completes.  Lost on
+# server restart — acceptable for local single-session use.
 jobs: dict = {}
 
 
 def run_processing(job_id: str):
+    """
+    Background task that drives video processing for a single job.
+
+    Triggered by FastAPI's BackgroundTasks immediately after /upload saves the
+    file.  Updates jobs[job_id] throughout so /status and the WebSocket can
+    report live progress to the frontend.
+
+    On success: sets status="complete", writes summary, csv_path, excel_path.
+    On failure: sets status="error" and records the exception string in "error".
+    """
     if job_id not in jobs:
         logger.error(f"Job {job_id} missing from store before processing start")
         return
@@ -169,6 +207,8 @@ async def get_result(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job["status"] != "complete":
+        # 425 "Too Early" signals the frontend that the result isn't ready
+        # yet without throwing a hard error that would stop it from polling.
         return JSONResponse(
             status_code=425,
             content={
@@ -264,6 +304,8 @@ async def websocket_progress(ws: WebSocket, job_id: str):
             if job["status"] in ("complete", "error"):
                 break
 
+            # Poll every 500 ms — fast enough for a smooth progress bar without
+            # hammering the event loop or the in-memory job store.
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {job_id}")

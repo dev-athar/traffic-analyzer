@@ -277,20 +277,20 @@ export default function Upload() {
             className={`nb-btn ${reidMode === "fast" ? "nb-btn--selected" : ""}`}
             onClick={() => setReidMode("fast")}
           >
-            FAST
+            FAST (YOLOV8N)
           </button>
           <button
             type="button"
             className={`nb-btn ${reidMode === "accurate" ? "nb-btn--selected" : ""}`}
             onClick={() => setReidMode("accurate")}
           >
-            ACCURATE
+            ACCURATE (YOLOV8S)
           </button>
         </div>
 
         {reidMode === "accurate" && (
           <div className="disclaimer">
-            High-accuracy model enabled. Expect significantly longer processing time.
+            High-accuracy model enabled (YOLOV8S). Expect longer processing time.
           </div>
         )}
 

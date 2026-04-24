@@ -129,7 +129,7 @@ export default function Progress() {
 
       <div className="badge-row">
         <div className="small-tag">
-          MODE: {meta.reidMode === "accurate" ? "ACCURATE" : "FAST"}
+          MODE: {meta.reidMode === "accurate" ? "ACCURATE (8S)" : "FAST (8N)"}
         </div>
         <div className="small-tag">
           LINES: {meta.lineMode === "dual" ? "DUAL" : "SINGLE"}

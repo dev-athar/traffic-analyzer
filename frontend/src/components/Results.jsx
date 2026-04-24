@@ -38,7 +38,7 @@ export default function Results() {
     };
   }, [result]);
 
-  const modeLabel = (result?.reid_mode || "fast").toUpperCase();
+  const modeLabel = (result?.reid_mode || location.state?.reidMode || "fast").toUpperCase();
 
   const lineConfig =
     result?.line_mode === "dual"
@@ -146,7 +146,7 @@ export default function Results() {
               <div className="meta-item">
                 FRAMES {result.processed_frames}/{result.total_frames}
               </div>
-              <div className="meta-item">REID MODE {modeLabel}</div>
+              <div className="meta-item">MODEL MODE {modeLabel === "ACCURATE" ? "YOLOV8S" : "YOLOV8N"}</div>
               <div className="meta-item">LINE CONFIG {lineConfig}</div>
             </div>
           </div>
