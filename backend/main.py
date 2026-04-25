@@ -1,5 +1,5 @@
 """
-main.py — FastAPI application for the Smart Drone Traffic Analyzer.
+main.py — FastAPI application for the Traffic Analyzer.
 
 Routes
 ------
@@ -56,7 +56,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = Path("./outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="Smart Drone Traffic Analyzer")
+app = FastAPI(title="Traffic Analyzer")
 
 app.add_middleware(
     CORSMiddleware,

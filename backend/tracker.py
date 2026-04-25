@@ -93,6 +93,9 @@ class VehicleTracker:
         self.line_dual_a_pos = line_dual_a_pos
         self.line_dual_b_pos = line_dual_b_pos
 
+        # YOLOv8s is larger and slower but produces more detections at
+        # high resolution; YOLOv8n is faster and good enough for most
+        # drone footage.  The choice is deferred to the caller via reid_mode.
         if self.reid_mode == "accurate":
             self.model = YOLO("yolov8s.pt")
             logger.info("Model: yolov8s.pt (accurate)")
@@ -100,13 +103,25 @@ class VehicleTracker:
             self.model = YOLO("yolov8n.pt")
             logger.info("Model: yolov8n.pt (fast)")
 
+        # Set of track IDs that have already been counted at least once;
+        # prevents the same physical vehicle from being counted twice.
         self.crossed_ids      = set()
+        # Maps track_id → last known side string ("above"/"below") so that
+        # _check_line_crossing can detect a side change between frames.
         self.track_last_side  = {}
+        # Rolling list of counted vehicles' histograms used by _reid_check
+        # to detect re-entering vehicles that received new track IDs.
         self.recently_counted = []
+        # Flat list of every detected bbox per frame; written to the report.
         self.vehicle_log      = []
+        # Running count per vehicle class, e.g. {"car": 3, "truck": 1}.
         self.count_by_class   = {}
+        # Maps track_id → frames remaining for the bbox flash fill effect;
+        # decremented each time _draw_frame renders that track.
         self.flash_registry   = {}
 
+        # Pixel y-coordinates of the counting lines — not known until
+        # set_frame_dimensions() is called with the actual video dimensions.
         self.line_y_a = None
         self.line_y_b = None
 
@@ -132,12 +147,19 @@ class VehicleTracker:
         width  : frame width in pixels.
         height : frame height in pixels.
         """
+        # Line positions are computed here instead of __init__ because the
+        # video dimensions are unknown at construction time — they're only
+        # available after the caller opens the video file.
         if self.line_mode == "single":
             self.line_y_a = int(height * self.line_single_pos)
+            # line_y_b = None signals to _draw_frame and _check_line_crossing
+            # that only Line A exists; they branch on this being None vs an int.
             self.line_y_b = None
         else:
             self.line_y_a = int(height * self.line_dual_a_pos)
             self.line_y_b = int(height * self.line_dual_b_pos)
+        # Store dimensions so _draw_frame can draw full-width lines and
+        # place the total-count label relative to the frame size.
         self.frame_height = height
         self.frame_width  = width
         logger.info(
@@ -171,14 +193,24 @@ class VehicleTracker:
         """
         if self.reid_mode == "accurate":
             original_h, original_w = frame.shape[:2]
+            # Never scale up — if the frame is already smaller than 1280px
+            # wide, use it at native resolution to avoid upscaling artifacts.
             scale = min(1.0, 1280 / original_w)
             infer_w = int(original_w * scale)
             infer_h = int(original_h * scale)
             infer_frame = cv2.resize(frame, (infer_w, infer_h))
             results = self.model.track(
                 infer_frame,
+                # persist=True tells ByteTrack to carry track IDs forward from
+                # the previous call, so IDs stay stable across frames instead of
+                # being reassigned from scratch every time.
                 persist=True,
+                # COCO class IDs for the vehicle types we care about:
+                # 2=car, 3=motorcycle, 5=bus, 7=truck.  All other classes are
+                # filtered out before the results reach this code.
                 classes=[2, 3, 5, 7],
+                # verbose=False suppresses YOLO's per-frame stdout output
+                # which would flood logs during video processing.
                 verbose=False,
                 tracker="bytetrack.yaml",
                 imgsz=1280,
@@ -190,8 +222,12 @@ class VehicleTracker:
         else:
             results = self.model.track(
                 frame,
+                # persist=True keeps ByteTrack state alive between calls so
+                # the same physical vehicle keeps the same track_id frame-to-frame.
                 persist=True,
+                # 2=car, 3=motorcycle, 5=bus, 7=truck (COCO dataset class IDs).
                 classes=[2, 3, 5, 7],
+                # Suppress YOLO's built-in per-frame progress output.
                 verbose=False,
                 tracker="bytetrack.yaml",
             )
@@ -200,11 +236,16 @@ class VehicleTracker:
             return frame, []
 
         boxes = results[0].boxes
+        # detections is built here and passed to _draw_frame; it is also
+        # returned to the caller (processor.py) for any downstream use.
         detections = []
 
+        # COCO ID → human-readable label for the four vehicle classes tracked.
         cls_map = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
         for box in boxes:
+            # ByteTrack may return boxes without IDs during the initialisation
+            # phase of a new track (n_init frames); skip until the ID is stable.
             if box.id is None:
                 continue
             track_id   = int(box.id.item())
@@ -212,6 +253,8 @@ class VehicleTracker:
             confidence = float(box.conf.item())
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
+            # Coordinates came from an inference on the downscaled frame;
+            # multiply back to original-frame pixel space before any further use.
             if self.reid_mode == "accurate":
                 x1 = int(x1 * scale_x)
                 y1 = int(y1 * scale_y)
@@ -225,6 +268,8 @@ class VehicleTracker:
                 [x1, y1, x2, y2], frame,
             )
 
+            # Each detection dict is consumed by _draw_frame for annotation
+            # and also returned as part of the second return value.
             detections.append({
                 "track_id":   track_id,
                 "cls":        cls_name,
@@ -234,6 +279,8 @@ class VehicleTracker:
                 "counted":    counted,
             })
 
+            # vehicle_log accumulates every detection across all frames;
+            # reporter.py uses it to build the CSV / Excel report.
             self.vehicle_log.append({
                 "frame_index":   frame_index,
                 "timestamp_sec": round(frame_index / fps, 3),
@@ -246,6 +293,9 @@ class VehicleTracker:
                 "counted":       counted,
             })
 
+        # Pass a copy so _draw_frame's in-place operations don't corrupt the
+        # original frame, which may still be needed for histogram crops above
+        # in future calls or by the caller for other processing.
         annotated = self._draw_frame(frame.copy(), detections)
         return annotated, detections
 
@@ -274,18 +324,26 @@ class VehicleTracker:
             counted=True  — it was also added to the running tally.
         """
         x1, y1, x2, y2 = bbox
-        # Use the vertical midpoint of the bbox as the vehicle's representative y.
+        # The centroid (vertical midpoint) is used rather than a bbox edge
+        # because it is stable regardless of how much of the vehicle is visible.
+        # Using the top or bottom edge would cause early/late triggers depending
+        # on vehicle size and approach angle.
         cy = (y1 + y2) // 2
 
         crossed = False
         counted = False
 
         if self.line_mode == "single":
-            # Classify which side of the line the centroid is on this frame.
+            # In OpenCV pixel coordinates y=0 is at the top of the frame and
+            # increases downward, so "above" the line means cy < line_y (smaller
+            # y value) and "below" means cy >= line_y (larger y value).
             side = "above" if cy < self.line_y_a else "below"
             prev = self.track_last_side.get(track_id)
+            # Record the current side BEFORE checking crossing so that the
+            # next call can compare against this frame's position.
             self.track_last_side[track_id] = side
-            # A side change between consecutive frames means the line was crossed.
+            # prev is None on a track's very first appearance — we don't know
+            # which side it came from, so we can't declare a crossing yet.
             if prev is not None and prev != side:
                 crossed = True
                 # crossed_ids ensures a track ID is counted at most once even if
@@ -296,7 +354,12 @@ class VehicleTracker:
                     )
 
         else:  # dual
+            # On first appearance in dual mode we record both line sides but
+            # cannot declare a crossing — return early without counting.
             if track_id not in self.track_last_side:
+                # A nested dict per track is needed because each line (A and B)
+                # must track its own side independently; a flat string would
+                # conflate the two lines.
                 self.track_last_side[track_id] = {
                     "a": "above" if cy < self.line_y_a else "below",
                     "b": "above" if cy < self.line_y_b else "below",
@@ -308,9 +371,13 @@ class VehicleTracker:
             prev_a = self.track_last_side[track_id]["a"]
             prev_b = self.track_last_side[track_id]["b"]
 
+            # Update state for both lines before the crossing check so that
+            # subsequent frames compare against the current position.
             self.track_last_side[track_id]["a"] = side_a
             self.track_last_side[track_id]["b"] = side_b
 
+            # A crossing is triggered if the centroid changed sides on EITHER
+            # line — vehicle only needs to pass through one of the two lines.
             if prev_a != side_a or prev_b != side_b:
                 crossed = True
                 if track_id not in self.crossed_ids:
@@ -347,18 +414,28 @@ class VehicleTracker:
         bool — True if the vehicle was counted; False if suppressed by ReID.
         """
         x1, y1, x2, y2 = bbox
+        # Crop the actual vehicle pixels from the frame so the histogram
+        # describes this specific vehicle's colour, not the whole scene.
         crop = frame[y1:y2, x1:x2]
+        # A bbox that partially extends outside the frame will produce a zero-
+        # size crop; guard against passing an empty array to cvtColor below.
         if crop.size == 0:
             histogram = None
         else:
             histogram = self._compute_histogram(crop)
 
+        # Run ReID BEFORE adding to counters — if the vehicle is a duplicate
+        # (re-entered with a new track ID), we skip counting and return early.
+        # Appending to recently_counted before this check would cause a vehicle
+        # to match itself on subsequent crossings.
         if self._reid_check(histogram, bbox):
             logger.info(f"ReID match: track {track_id} skipped")
             return False
 
         self.crossed_ids.add(track_id)
         self.count_by_class[cls_name] = self.count_by_class.get(cls_name, 0) + 1
+        # Writing to flash_registry here means _draw_frame will show the fill
+        # effect starting from the very next rendered frame for this track.
         self.flash_registry[track_id] = FLASH_FRAMES
 
         entry = {
@@ -368,6 +445,9 @@ class VehicleTracker:
             "bbox":      bbox,
         }
 
+        # recently_counted is the sliding window that _reid_check searches.
+        # We append after confirming this is a new vehicle so future crossings
+        # can be matched against it.
         self.recently_counted.append(entry)
         # Cap the ReID memory at 50 entries to bound memory usage.  Oldest
         # entry is evicted first (FIFO) so vehicles from long ago age out.

@@ -22,7 +22,7 @@ from openpyxl import Workbook
 
 OUTPUT_DIR = Path("./outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
-REPORT_TITLE = "Smart Drone Traffic Analyzer Report"
+REPORT_TITLE = "Traffic Analyzer Report"
 
 REPORT_COLUMNS = [
     "frame_index",
