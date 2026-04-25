@@ -97,8 +97,8 @@ class VehicleTracker:
         # high resolution; YOLOv8n is faster and good enough for most
         # drone footage.  The choice is deferred to the caller via reid_mode.
         if self.reid_mode == "accurate":
-            self.model = YOLO("yolov8m.pt")
-            logger.info("Model: yolov8m.pt (accurate)")
+            self.model = YOLO("yolov8s.pt")
+            logger.info("Model: yolov8s.pt (accurate)")
         else:
             self.model = YOLO("yolov8n.pt")
             logger.info("Model: yolov8n.pt (fast)")
