@@ -40,8 +40,8 @@ Traffic Analyzer accepts an MP4 video recorded from a static drone and counts ho
 ### 4.1 Clone / obtain the repository
 
 ```
-git clone <repo-url>
-cd smart-drone-analyzer
+git clone https://github.com/dev-athar/traffic-analyzer.git
+cd .\traffic-analyzer\
 ```
 
 ### 4.2 Backend — Python virtual environment

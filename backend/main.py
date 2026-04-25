@@ -102,8 +102,12 @@ def run_processing(job_id: str):
 
     job = jobs[job_id]
     job["status"] = "processing"
+    # Recorded before process_video so the final duration includes model
+    # initialisation and VideoWriter setup, not just the frame loop itself.
     start_time = time.time()
 
+    # Closure so progress_callback can write directly into the job dict that
+    # websocket_progress is reading; no queue or shared variable needed.
     def progress_callback(pct):
         job["progress"] = float(pct)
 
@@ -130,6 +134,9 @@ def run_processing(job_id: str):
 
         logger.info(f"Job {job_id} complete")
     except Exception as e:
+        # Catch-all so any failure in the CV pipeline is recorded in the job
+        # dict rather than silently killing the background thread.  The frontend
+        # learns about the error via the WebSocket status field, not an HTTP error.
         job["status"] = "error"
         job["error"] = str(e)
         logger.error(f"Job {job_id} failed: {e}")
@@ -149,6 +156,9 @@ async def upload_video(
     if not file.filename or not file.filename.lower().endswith(".mp4"):
         raise HTTPException(status_code=400, detail="Only .mp4 files are accepted.")
 
+    # job_id is generated before saving so the filename embeds the ID from the
+    # start; every file on disk can be traced to its job without consulting
+    # the in-memory dict, which helps with manual debugging.
     job_id = str(uuid.uuid4())[:8]
     dest = UPLOAD_DIR / f"{job_id}_{file.filename}"
 
@@ -171,6 +181,10 @@ async def upload_video(
         "filename": file.filename,
         "video_path": str(dest),
     }
+    # BackgroundTasks runs run_processing in a thread after the HTTP response
+    # is sent, so the client receives the job_id immediately.  Using
+    # asyncio.create_task would require run_processing to be a coroutine and
+    # would block the event loop during the CPU-bound CV work.
     background_tasks.add_task(run_processing, job_id)
     logger.info(f"Job {job_id} queued")
 
@@ -256,9 +270,14 @@ async def get_report(job_id: str, format: str = "csv"):
     if job is None or job["status"] != "complete":
         raise HTTPException(status_code=404, detail="Report not available")
 
+    # format is a query param (?format=csv or ?format=excel) rather than a
+    # path segment so both formats share one route pattern /report/{job_id}.
     report_format = format.lower()
     if report_format == "csv":
         csv_path = job.get("csv_path")
+        # csv_path is None if the job completed without generating a report
+        # (shouldn't happen in normal flow).  .exists() catches the case where
+        # the outputs/ directory was cleared while the server was still running.
         if not csv_path or not Path(csv_path).exists():
             raise HTTPException(status_code=404, detail="CSV report not found")
         return FileResponse(
@@ -301,6 +320,10 @@ async def websocket_progress(ws: WebSocket, job_id: str):
                 }
             )
 
+            # Break on error too, not just complete — continuing the loop after
+            # an error would spam the same error message to the client every 500 ms
+            # until it disconnects.  The frontend's onerror/onclose handler shows
+            # the error state once the socket closes.
             if job["status"] in ("complete", "error"):
                 break
 
@@ -308,4 +331,6 @@ async def websocket_progress(ws: WebSocket, job_id: str):
             # hammering the event loop or the in-memory job store.
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
+        # Client navigated away or closed the tab before processing finished;
+        # this is normal browser behaviour and not a server-side error.
         logger.info(f"WebSocket disconnected: {job_id}")

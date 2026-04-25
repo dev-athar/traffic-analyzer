@@ -97,8 +97,8 @@ class VehicleTracker:
         # high resolution; YOLOv8n is faster and good enough for most
         # drone footage.  The choice is deferred to the caller via reid_mode.
         if self.reid_mode == "accurate":
-            self.model = YOLO("yolov8s.pt")
-            logger.info("Model: yolov8s.pt (accurate)")
+            self.model = YOLO("yolov8m.pt")
+            logger.info("Model: yolov8m.pt (accurate)")
         else:
             self.model = YOLO("yolov8n.pt")
             logger.info("Model: yolov8n.pt (fast)")
@@ -470,10 +470,16 @@ class VehicleTracker:
         # Use Hue (channel 0) for colour identity and Saturation (channel 1)
         # for colour purity.  Value (channel 2) is excluded because it varies
         # with lighting conditions and would reduce cross-frame match accuracy.
+        # 50 Hue bins (OpenCV Hue range 0–180) and 60 Saturation bins (0–256)
+        # give enough resolution to distinguish similar colours without being
+        # so fine-grained that minor lighting shifts produce false non-matches.
         hist = cv2.calcHist(
             [hsv], [0, 1], None,
             [50, 60], [0, 180, 0, 256],
         )
+        # Normalise to [0, 1] so crops of different sizes compare on equal
+        # footing — a vehicle half-visible at the frame edge and the same
+        # vehicle fully visible should still produce the same histogram shape.
         cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
         return hist.flatten()
 
@@ -494,19 +500,28 @@ class VehicleTracker:
         -------
         bool — True if a duplicate match is found; False otherwise.
         """
+        # No history yet means this is the first crossing ever; nothing to match against.
         if not self.recently_counted:
             return False
+        # A None histogram means the crop was zero-sized (bbox outside frame);
+        # we can't compare it, so let the count through rather than suppress it.
         if histogram is None:
             return False
 
         for entry in self.recently_counted:
             if entry.get("histogram") is None:
                 continue
+            # HISTCMP_CORREL (Pearson correlation) returns 1.0 for identical
+            # histograms, 0.0 for no correlation, and negative for inverse
+            # distributions.  Only scores above REID_THRESHOLD (0.90) are treated
+            # as the same vehicle; lower scores indicate different-coloured vehicles.
             score = cv2.compareHist(
                 histogram,
                 entry["histogram"],
                 cv2.HISTCMP_CORREL,
             )
+            # True tells _handle_new_crossing to suppress the count —
+            # this is a re-entry of an already-counted vehicle, not a new one.
             if score > REID_THRESHOLD:
                 return True
         return False
@@ -532,6 +547,10 @@ class VehicleTracker:
         -------
         np.ndarray — the annotated frame.
         """
+        # Defined here rather than at class or module level so the lookup stays
+        # physically next to the drawing code that uses it; it never changes
+        # between calls and has no side-effects, so the cost of re-creating
+        # the dict each frame is negligible.
         color_map = {
             "car":        (0, 255, 0),
             "truck":      (0, 0, 255),
@@ -552,10 +571,15 @@ class VehicleTracker:
                 # produces a semi-transparent highlight that tints the vehicle
                 # without obscuring it.
                 cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
+                # Decrement here rather than in the counting logic so the counter
+                # only ticks when the frame is actually rendered.  If FRAME_SKIP > 1,
+                # skipped frames would otherwise drain the counter invisibly.
                 self.flash_registry[track_id] -= 1
                 if self.flash_registry[track_id] <= 0:
                     del self.flash_registry[track_id]
 
+            # Outline drawn after addWeighted so the fill cannot paint over the
+            # border; the 2 px rectangle always appears on top regardless of opacity.
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 frame, f"{cls_name} #{track_id}",
@@ -563,6 +587,8 @@ class VehicleTracker:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
             )
 
+        # Recompute from count_by_class each frame so the label is always current
+        # without maintaining a redundant separate integer counter alongside the dict.
         total = sum(self.count_by_class.values())
 
         if self.line_mode == "single":
@@ -572,6 +598,8 @@ class VehicleTracker:
                 (self.frame_width, self.line_y_a),
                 (255, 255, 255), 2,
             )
+            # y - 10 places the label just above the line so it doesn't
+            # overlap the line itself; positive y is downward in OpenCV.
             cv2.putText(
                 frame, f"Counted: {total}",
                 (10, self.line_y_a - 10),
@@ -584,6 +612,7 @@ class VehicleTracker:
                 (self.frame_width, self.line_y_a),
                 (255, 255, 255), 2,
             )
+            # y - 10: label floats above Line A so the line remains visible.
             cv2.putText(
                 frame, "Line A",
                 (10, self.line_y_a - 10),
@@ -595,11 +624,14 @@ class VehicleTracker:
                 (self.frame_width, self.line_y_b),
                 (255, 255, 255), 2,
             )
+            # y - 10: same convention — label above Line B.
             cv2.putText(
                 frame, "Line B",
                 (10, self.line_y_b - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
             )
+            # frame_height - 20 anchors the total to the bottom of the frame
+            # where it doesn't collide with either counting line.
             cv2.putText(
                 frame, f"Total Counted: {total}",
                 (10, self.frame_height - 20),

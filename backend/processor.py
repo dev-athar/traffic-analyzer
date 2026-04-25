@@ -104,6 +104,8 @@ def process_video(
 
         # Run the tracker on every Nth frame to control CPU load.
         if frame_index % FRAME_SKIP == 0:
+            # tracker.process_frame calls frame.copy() internally before drawing,
+            # so passing the raw frame here is safe — the original is not mutated.
             annotated, _ = tracker.process_frame(frame, frame_index, fps)
             out.write(annotated)
             processed_count += 1
@@ -146,6 +148,9 @@ def process_video(
         f"Job {job_id} complete. Total counted: {summary['total_unique']}"
     )
 
+    # Returned to run_processing() in main.py, which stores it in
+    # jobs[job_id]["summary"] for the /result API endpoint and also
+    # passes vehicle_log to generate_csv / generate_excel for reports.
     return summary
 
 

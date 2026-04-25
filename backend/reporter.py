@@ -86,6 +86,9 @@ def generate_csv(vehicle_log: list, summary: dict, job_id: str) -> str:
     str — absolute path to the written CSV file.
     """
     output_path = OUTPUT_DIR / f"{job_id}_report.csv"
+    # vehicle_log has one entry per detection per frame; _build_counted_rows
+    # reduces it to one row per unique crossing — the meaningful unit for
+    # a traffic count report, not per-frame bbox positions.
     counted_rows = _build_counted_rows(vehicle_log)
     processing_duration = summary.get("processing_duration_sec", 0.0)
 
@@ -95,6 +98,11 @@ def generate_csv(vehicle_log: list, summary: dict, job_id: str) -> str:
         writer.writerow(["Job ID", job_id])
         writer.writerow(["Processing duration (sec)", processing_duration])
         writer.writerow([])
+        # Columns: frame_index = frame number of crossing,
+        #          timestamp_sec = seconds from video start,
+        #          track_id = ByteTrack persistent ID,
+        #          vehicle_class = "car"/"truck"/"bus"/"motorcycle",
+        #          counter = sequential crossing number (1 = first counted).
         writer.writerow(REPORT_COLUMNS)
         for row in counted_rows:
             writer.writerow([row.get(column) for column in REPORT_COLUMNS])
@@ -123,9 +131,11 @@ def generate_excel(vehicle_log: list, summary: dict, job_id: str) -> str:
     """
     output_path = OUTPUT_DIR / f"{job_id}_report.xlsx"
     workbook = Workbook()
+    # Same deduplication as the CSV — one row per crossing, not per detection frame.
     counted_rows = _build_counted_rows(vehicle_log)
 
-    # Sheet 1: Counted vehicles only
+    # Sheet 1 "Counted": mirrors the CSV; intended for row-level inspection of
+    # when each individual vehicle was counted.
     detections_sheet = workbook.active
     detections_sheet.title = "Counted"
     detections_sheet.append([REPORT_TITLE])
@@ -137,11 +147,13 @@ def generate_excel(vehicle_log: list, summary: dict, job_id: str) -> str:
     detections_sheet.append(REPORT_COLUMNS)
     for row in counted_rows:
         detections_sheet.append([row.get(column) for column in REPORT_COLUMNS])
+    # Auto-size prevents truncated text when the file is opened directly in Excel,
+    # which defaults to a narrow fixed column width.
     _autosize_worksheet_columns(detections_sheet)
 
-    # Sheet 2: Summary — aggregate view so readers can assess overall results
-    # without scrolling through the Counted sheet.  Per-class counts are
-    # expanded into individual rows for easy charting in Excel.
+    # Sheet 2 "Summary": aggregate view giving a at-a-glance answer to
+    # "how many vehicles, by type, and under what run conditions?"
+    # Per-class counts are in individual rows so the sheet is chartable in Excel.
     summary_sheet = workbook.create_sheet("Summary")
     summary_sheet.append(["Metric", "Value"])
     summary_sheet.append(["Total unique vehicles", summary.get("total_unique", 0)])
