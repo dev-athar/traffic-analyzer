@@ -111,6 +111,75 @@ Open `http://localhost:5173` in a browser.
 **Proxy note:** `vite.config.js` defines a proxy for the `/api` prefix only — requests from the browser to `/api/*` are rewritten (the `/api` prefix is stripped) and forwarded to `http://localhost:8000`. This proxy is used exclusively by the report download buttons in `Results.jsx` (`/api/report/<jobId>?format=csv`). All other frontend traffic (axios calls, WebSocket, video `src`) goes directly to `http://localhost:8000` via hardcoded `baseURL` in `api.js`.
 
 ---
+## The Counting Approach
+
+### Why static footage
+
+Processing moving drone footage requires compensating for camera motion on every frame — homography estimation or optical flow — before any detection can begin. Static footage eliminates this layer entirely. The camera does not move, road geometry stays fixed in pixel space, and counting lines stay aligned with the road for the full video.
+
+### The line method
+
+Two horizontal lines span the frame. Any vehicle whose centroid crosses either line is counted once.
+
+ 
+```
+════════════════  LINE A  (default: 50% from top)  ════════════════
+ 
+                    [ traffic flows through here ]
+ 
+════════════════  LINE B  (default: 80% from top)  ════════════════
+```
+
+The track ID is added to `crossed_ids` on first crossing. Any subsequent crossing by the same ID is ignored. Line positions are adjustable via sliders in the UI before processing starts.
+
+**Why two lines:** A single line at 50% silently misses vehicles already past it when recording starts, and vehicles that enter near the end and never reach it. Dual lines catch both — vehicles present at start cross Line B, late-entering vehicles cross Line A.
+
+---
+
+## Detection & Tracking
+
+### Detection modes
+
+| Mode | Model | Resolution | Confidence | Best For |
+|------|-------|------------|------------|----------|
+| Fast | YOLOv8n | 640px | 0.25 | Lower altitude, large vehicles |
+| Accurate | YOLOv8s | 1280px | 0.35 | High altitude, small or distant vehicles |
+
+In Accurate mode, frames are resized for inference only — bounding boxes are scaled back to original dimensions before drawing. YOLOv8m and YOLOv8l were evaluated but run 3–10x slower on CPU with marginal gains for this use case.
+
+Detected classes: `car` (2), `truck` (7), `bus` (5), `motorcycle` (3).
+
+### Tracking
+
+ByteTrack assigns a persistent ID to each vehicle using Kalman filter motion prediction. Occluded vehicles are held for up to 50 frames and re-associated with their original ID on reappearance.
+
+| Tracker | Decision |
+|---------|----------|
+| SORT | Rejected — frequent ID switches on occlusion |
+| DeepSORT | Rejected — appearance model on every frame, expensive on CPU |
+| StrongSORT | Rejected — marginal gain over ByteTrack |
+| ByteTrack | Chosen — built into Ultralytics, fast, no extra dependency |
+
+`max_age` raised from 30 to 50 to handle extended occlusions common in drone footage (bridges, large vehicles). Longer buffer means more re-associations succeed without triggering the Re-ID check.
+
+---
+ 
+## Re-ID: Handling Occlusion
+ 
+If a vehicle is occluded for longer than `max_age` frames, ByteTrack gives up and assigns it a new ID when it reappears. To the counting logic, this looks like a brand new vehicle crossing a line — which would cause a double count.
+ 
+Every crossing event runs a Re-ID check before the count is accepted:
+ 
+1. Crop the vehicle's bounding box from the current frame
+2. Compute an HSV color histogram (H and S channels, 50×60 bins)
+3. Compare against a rolling list of the last 50 counted vehicles using `cv2.compareHist` with `HISTCMP_CORREL`
+4. If similarity ≥ 0.90 → duplicate → reject the count
+5. If similarity < 0.90 → new vehicle → count it
+**Why HSV instead of RGB:** HSV separates hue and saturation (color identity) from brightness (value). This makes the comparison robust to lighting variation, shadows, and exposure differences that are common in outdoor drone footage. Comparing in RGB would cause the same vehicle in shadow to look different from itself in sunlight.
+ 
+**Why 0.90 threshold:** Calibrated through testing. Lower values produced false matches between different vehicles of similar color. Higher values made the check too strict to catch actual re-IDs after occlusion.
+ 
+---
 
 ## 6. Full Application Flow
 
