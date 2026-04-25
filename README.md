@@ -52,6 +52,9 @@ cd backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+
+# Download yolo, model supposed to auto install, but the progress bar stucks at zero and seems like the application stopped working
+python -c "from ultralytics import YOLO; YOLO('yolov8n.pt'); YOLO('yolov8s.pt')"
 ```
 
 **macOS / Linux**
@@ -60,6 +63,9 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# Download yolo, model supposed to auto install, but the progress bar stucks at zero and seems like the application stopped working
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt'); YOLO('yolov8s.pt')"
 ```
 
 ### 4.3 Frontend — Node dependencies
