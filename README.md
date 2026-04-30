@@ -6,7 +6,7 @@ Traffic Analyzer accepts an MP4 video recorded from a static drone and counts ho
 
 ---
 #Demo
-https://github.com/user-attachments/assets/90d89d59-48cc-485d-8cfb-ac0b06cbfdec
+<video src="https://github.com/user-attachments/assets/90d89d59-48cc-485d-8cfb-ac0b06cbfdec" width="400" controls></video>
 ---
 
 ## 2. Stack
