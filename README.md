@@ -5,6 +5,9 @@
 Traffic Analyzer accepts an MP4 video recorded from a static drone and counts how many vehicles pass through one or two user-defined horizontal counting lines. The output is an annotated MP4 (bounding boxes, line overlays, running count), a CSV, and an Excel workbook. Internally, YOLOv8 detects vehicles each frame, ByteTrack assigns persistent track IDs across frames, centroid-based line-crossing logic fires the counter, and an HSV-histogram ReID check suppresses double counts when a vehicle re-enters the scene with a new track ID.
 
 ---
+#Demo
+https://github.com/user-attachments/assets/90d89d59-48cc-485d-8cfb-ac0b06cbfdec
+---
 
 ## 2. Stack
 
